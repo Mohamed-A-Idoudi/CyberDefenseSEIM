@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+    <title>CyberDefense SIEM – Sprint 1</title>
+</head>
+<body>
+    <h1>CyberDefense SIEM – Sprint 1 MVP</h1>
+
+    <h2>Upload log file (CSV/JSON)</h2>
+    <form id="upload-form" enctype="multipart/form-data">
+        <input type="file" name="file" required>
+        <button type="submit">Upload</button>
+    </form>
+    <pre id="upload-result"></pre>
+
+    <h2>Latest logs (from Elasticsearch)</h2>
+    <table border="1">
+        <thead>
+            <tr><th>Timestamp</th><th>IP</th><th>Event</th></tr>
+        </thead>
+        <tbody id="logs-body"></tbody>
+    </table>
+
+    <script>
+    async function loadLogs() {
+        const res = await fetch('/api/logs/latest');
+        const data = await res.json();
+        const body = document.getElementById('logs-body');
+        body.innerHTML = '';
+        for (const log of (data.logs || [])) {
+            const tr = document.createElement('tr');
+            tr.innerHTML =
+                `<td>${log.timestamp || ''}</td>` +
+                `<td>${log.ip || ''}</td>` +
+                `<td>${log.event || ''}</td>`;
+            body.appendChild(tr);
+        }
+    }
+
+    document.getElementById('upload-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const res = await fetch('/api/logs/upload', { method: 'POST', body: formData });
+        const text = await res.text();
+        document.getElementById('upload-result').textContent = text;
+        loadLogs();
+    });
+
+    loadLogs();
+    setInterval(loadLogs, 10000);
+    </script>
+</body>
+</html>

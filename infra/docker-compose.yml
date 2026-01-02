@@ -7,7 +7,7 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms${ES_JAVA_MEN} -Xmx${ES_JAVA_MEN}
+      - ES_JAVA_OPTS=-Xms${ES_JAVA_MEM} -Xmx${ES_JAVA_MEM}
     ulimits:
       memlock:
         soft: -1
@@ -43,7 +43,7 @@ services:
       - ./logstash/config:/usr/share/logstash/config
       - ./logstash/input:/var/log/siem-input
     environment:
-      - LS_JAVA_OPTS=-Xms${LS_JAVA_MEN} -Xmx${LS_JAVA_MEN}
+      - LS_JAVA_OPTS=-Xms${LS_JAVA_MEM} -Xmx${LS_JAVA_MEM}
     networks:
       - siem-net
 
