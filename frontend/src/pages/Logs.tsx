@@ -2,25 +2,100 @@ import { useState, useEffect } from 'react';
 import { Header } from '@/components/Common/Header';
 import { LogsTable } from '@/components/Logs/LogsTable';
 import { KibanaEmbed } from '@/components/Dashboard/KibanaEmbed';
-import { getLatestLogs, checkHealth, LogEntry } from '@/services/api';
+import { getLatestLogs, searchLogs, checkHealth, LogEntry } from '@/services/api';
 import { wsService } from '@/services/websocket';
-import { Search, Filter, Download, RefreshCw, Calendar, Globe } from 'lucide-react';
-import { EVENT_TYPES } from '@/utils/constants';
+import { Search, Filter, Download, RefreshCw, Calendar, Globe, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+
+interface IPOption {
+  ip: string;
+  count: number;
+}
+
+interface EventOption {
+  event: string;
+  count: number;
+  severity?: string;
+}
+
 
 const Logs = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [filteredLogs, setFilteredLogs] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isHealthy, setIsHealthy] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [totalLogs, setTotalLogs] = useState(0);
   
   // Filters
   const [searchIP, setSearchIP] = useState('');
   const [eventType, setEventType] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  
+  // Dropdown options
+  const [ipOptions, setIpOptions] = useState<IPOption[]>([]);
+  const [eventOptions, setEventOptions] = useState<EventOption[]>([]);
+  const [loadingOptions, setLoadingOptions] = useState(true);
 
+
+  // Fetch IP and Event options
+  const fetchFilterOptions = async () => {
+    setLoadingOptions(true);
+    try {
+      console.log("📥 Fetching filter options...");
+      
+      const [ipsRes, eventsRes] = await Promise.all([
+        fetch('http://localhost:5000/api/logs/unique-ips').then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }),
+        fetch('http://localhost:5000/api/logs/unique-events').then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }),
+      ]);
+      
+      console.log("✅ IPs loaded:", ipsRes.ips?.length || 0);
+      console.log("✅ Events loaded:", eventsRes.events?.length || 0);
+      
+      setIpOptions(ipsRes.ips || []);
+      setEventOptions(eventsRes.events || []);
+    } catch (error) {
+      console.error('❌ Failed to fetch filter options:', error);
+      setIpOptions([]);
+      setEventOptions([]);
+    } finally {
+      setLoadingOptions(false);
+    }
+  };
+
+
+  // Fetch logs with filters
+  const fetchLogsWithFilters = async (page = 1) => {
+    setIsLoading(true);
+    try {
+      const response = await searchLogs({
+        ip: searchIP || undefined,
+        event: eventType || undefined,
+        start_date: dateFrom || undefined,
+        end_date: dateTo || undefined,
+        page,
+      });
+      setLogs(response.logs || []);
+      setTotalLogs(response.total || response.logs?.length || 0);
+      setCurrentPage(page);
+    } catch (error) {
+      console.error('Failed to search logs:', error);
+      setLogs([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+
+  // Initial load
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -30,7 +105,7 @@ const Logs = () => {
         ]);
         setIsHealthy(health.status === 'healthy');
         setLogs(logsResponse.logs || []);
-        setFilteredLogs(logsResponse.logs || []);
+        setTotalLogs(logsResponse.total || logsResponse.logs?.length || 0);
       } catch (error) {
         console.error('Failed to fetch data:', error);
       } finally {
@@ -39,6 +114,7 @@ const Logs = () => {
     };
 
     fetchData();
+    fetchFilterOptions();
 
     wsService.connect();
     const unsubConnection = wsService.subscribe('connection_status', ({ connected }) => {
@@ -55,42 +131,16 @@ const Logs = () => {
     };
   }, []);
 
-  // Apply filters
-  useEffect(() => {
-    let result = [...logs];
-
-    if (searchIP) {
-      result = result.filter((log) =>
-        log.ip.toLowerCase().includes(searchIP.toLowerCase())
-      );
-    }
-
-    if (eventType) {
-      result = result.filter((log) =>
-        log.event.toLowerCase().includes(eventType.toLowerCase())
-      );
-    }
-
-    if (dateFrom) {
-      result = result.filter((log) =>
-        new Date(log.timestamp) >= new Date(dateFrom)
-      );
-    }
-
-    if (dateTo) {
-      result = result.filter((log) =>
-        new Date(log.timestamp) <= new Date(dateTo)
-      );
-    }
-
-    setFilteredLogs(result);
-  }, [logs, searchIP, eventType, dateFrom, dateTo]);
 
   const handleRefresh = async () => {
     setIsLoading(true);
     try {
       const response = await getLatestLogs();
       setLogs(response.logs || []);
+      setTotalLogs(response.total || response.logs?.length || 0);
+      
+      // Also refresh the dropdown options
+      await fetchFilterOptions();
     } catch (error) {
       console.error('Failed to refresh:', error);
     } finally {
@@ -98,11 +148,12 @@ const Logs = () => {
     }
   };
 
+
   const handleExportCSV = () => {
     const headers = ['Timestamp', 'IP Address', 'Event', 'Severity'];
     const csvContent = [
       headers.join(','),
-      ...filteredLogs.map((log) =>
+      ...logs.map((log) =>
         [log.timestamp, log.ip, log.event, log.severity || 'unknown'].join(',')
       ),
     ].join('\n');
@@ -116,14 +167,32 @@ const Logs = () => {
     URL.revokeObjectURL(url);
   };
 
+
   const clearFilters = () => {
     setSearchIP('');
     setEventType('');
     setDateFrom('');
     setDateTo('');
+    setCurrentPage(1);
   };
 
+
   const hasActiveFilters = searchIP || eventType || dateFrom || dateTo;
+
+  // Get severity badge color
+  const getSeverityColor = (severity?: string) => {
+    switch (severity) {
+      case 'critical':
+        return 'bg-red-500/20 text-red-700';
+      case 'high':
+        return 'bg-orange-500/20 text-orange-700';
+      case 'medium':
+        return 'bg-yellow-500/20 text-yellow-700';
+      default:
+        return 'bg-green-500/20 text-green-700';
+    }
+  };
+
 
   return (
     <div className="min-h-screen bg-background cyber-grid">
@@ -164,42 +233,62 @@ const Logs = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* IP Search */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            {/* IP Address Dropdown */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                 <Globe className="h-4 w-4" />
-                IP Address
+                IP Address ({ipOptions.length})
               </label>
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <input
-                  type="text"
+                <select
                   value={searchIP}
                   onChange={(e) => setSearchIP(e.target.value)}
-                  placeholder="Search by IP..."
-                  className="w-full pl-10 pr-4 py-2 rounded-lg bg-muted/50 border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm font-mono"
-                />
+                  className="w-full px-4 py-2 pr-10 rounded-lg bg-muted/50 border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm appearance-none cursor-pointer"
+                >
+                  <option value="">All IP addresses</option>
+                  {loadingOptions ? (
+                    <option disabled>Loading...</option>
+                  ) : ipOptions.length > 0 ? (
+                    ipOptions.map((item) => (
+                      <option key={item.ip} value={item.ip}>
+                        {item.ip} ({item.count} logs)
+                      </option>
+                    ))
+                  ) : (
+                    <option disabled>No IPs found</option>
+                  )}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
               </div>
             </div>
 
-            {/* Event Type */}
+            {/* Event Type Dropdown */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">
-                Event Type
+                Event Type ({eventOptions.length})
               </label>
-              <select
-                value={eventType}
-                onChange={(e) => setEventType(e.target.value)}
-                className="w-full px-4 py-2 rounded-lg bg-muted/50 border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm"
-              >
-                <option value="">All events</option>
-                {EVENT_TYPES.map((type) => (
-                  <option key={type} value={type}>
-                    {type.replace(/_/g, ' ')}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <select
+                  value={eventType}
+                  onChange={(e) => setEventType(e.target.value)}
+                  className="w-full px-4 py-2 pr-10 rounded-lg bg-muted/50 border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm appearance-none cursor-pointer"
+                >
+                  <option value="">All events</option>
+                  {loadingOptions ? (
+                    <option disabled>Loading...</option>
+                  ) : eventOptions.length > 0 ? (
+                    eventOptions.map((item) => (
+                      <option key={item.event} value={item.event}>
+                        {item.event.replace(/_/g, ' ')} - {item.severity?.toUpperCase()} ({item.count} logs)
+                      </option>
+                    ))
+                  ) : (
+                    <option disabled>No events found</option>
+                  )}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+              </div>
             </div>
 
             {/* Date From */}
@@ -230,17 +319,29 @@ const Logs = () => {
               />
             </div>
           </div>
+
+          {/* Search Button */}
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => fetchLogsWithFilters(1)}
+              disabled={isLoading}
+              className="inline-flex items-center gap-2 px-6 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Search className="h-4 w-4" />
+              Search Logs
+            </button>
+          </div>
         </div>
 
         {/* Results Header */}
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm text-muted-foreground">
-            Showing <span className="font-mono text-foreground">{filteredLogs.length}</span> of{' '}
-            <span className="font-mono text-foreground">{logs.length}</span> logs
+            Showing <span className="font-mono text-foreground">{logs.length}</span> of{' '}
+            <span className="font-mono text-foreground">{totalLogs}</span> logs
           </p>
           <button
             onClick={handleExportCSV}
-            disabled={filteredLogs.length === 0}
+            disabled={logs.length === 0}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Download className="h-4 w-4" />
@@ -250,7 +351,7 @@ const Logs = () => {
 
         {/* Logs Table */}
         <div className="mb-8">
-          <LogsTable logs={filteredLogs} isLoading={isLoading} maxRows={20} />
+          <LogsTable logs={logs} isLoading={isLoading} maxRows={20} />
         </div>
 
         {/* Kibana Embed */}
@@ -259,5 +360,6 @@ const Logs = () => {
     </div>
   );
 };
+
 
 export default Logs;

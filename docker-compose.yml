@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: cyberdefense_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - cyberdefense-net
+
+  # Kibana
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.3
+    container_name: cyberdefense_kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    networks:
+      - cyberdefense-net
+
+  # Logstash
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.15.3
+    container_name: cyberdefense_logstash
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./infra/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+      - ./infra/logstash/input:/input
+    depends_on:
+      - elasticsearch
+    networks:
+      - cyberdefense-net
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: cyberdefense_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    networks:
+      - cyberdefense-net
+
+  # MongoDB
+  mongodb:
+    image: mongo:7.0
+    container_name: cyberdefense_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password123
+    volumes:
+      - mongodata:/data/db
+    networks:
+      - cyberdefense-net
+
+volumes:
+  esdata:
+  redisdata:
+  mongodata:
+
+networks:
+  cyberdefense-net:
+    driver: bridge

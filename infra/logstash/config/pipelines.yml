@@ -1,2 +1,2 @@
-- pipeline.id: siem-csv
+- pipeline.id: csv-input
   path.config: "/usr/share/logstash/pipeline/csv.conf"

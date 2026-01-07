@@ -1,0 +1,118 @@
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+from config import Config
+from werkzeug.utils import secure_filename
+from elasticsearch import Elasticsearch
+import os
+from datetime import datetime
+
+UPLOAD_FOLDER = '/home/bigdata/CyberDefenseSEIM/infra/logstash/input'
+ALLOWED_EXTENSIONS = {'csv', 'json'}
+
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(Config)
+    CORS(app)
+
+    app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+    es = Elasticsearch(['http://localhost:9200'])
+
+    def allowed_file(filename):
+        return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+    @app.route('/')
+    def home():
+        return render_template('dashboard.html')
+
+#    @app.route('/api/health')
+#    def health():
+#        return {"status": "healthy"}
+#
+#    @app.route('/api/logs/upload', methods=['POST'])
+#    def upload_log():
+#        if 'file' not in request.files:
+#            return jsonify({"error": "No file part"}), 400
+#
+#        file = request.files['file']
+#        if file.filename == '':
+#            return jsonify({"error": "No selected file"}), 400
+#
+#        if file and allowed_file(file.filename):
+#            filename = secure_filename(file.filename)
+#            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+#            file.save(filepath)
+#            return jsonify({
+#                "status": "success",
+#                "filename": filename,
+#                "filepath": filepath,
+#                "timestamp": datetime.utcnow().isoformat()
+#            }), 200
+#
+#        return jsonify({"error": "File type not allowed"}), 400
+@app.route('/api/logs/upload', methods=['POST'])
+def upload_log():
+    """
+    US-LOG-1: Upload CSV/JSON file -> Logstash -> MongoDB metadata
+    """
+    from models.file_metadata import FileMetadata
+    
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        # US-MONGO-2: Save metadata to MongoDB
+        metadata = FileMetadata()
+        upload_doc = metadata.save_upload(
+            filename=filename,
+            size=len(file.read()),  # Get file size
+            log_count=0,  # Will be updated after processing
+            status="uploaded"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "filename": filename,
+            "filepath": filepath,
+            "upload_id": upload_doc["_id"],
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
+    
+    return jsonify({"error": "Invalid file type"}), 400
+
+
+    @app.route('/api/logs/latest')
+    def latest_logs():
+        try:
+            resp = es.search(
+                index="siem-logs-*",
+                size=50,
+                sort=[{"@timestamp": {"order": "desc"}}]
+            )
+            logs = []
+            for h in resp["hits"]["hits"]:
+                src = h.get("_source", {})
+                logs.append({
+                    "timestamp": src.get("timestamp"),
+                    "ip": src.get("ip"),
+                    "event": src.get("event"),
+                })
+            return jsonify({"logs": logs})
+        except Exception as e:
+            return jsonify({"error": str(e), "logs": []}), 500
+
+    return app
+
+if __name__ == '__main__':
+    app = create_app()
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
